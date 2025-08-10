@@ -416,8 +416,14 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         if not self.source_node or not self.target_node:
             return
 
-        def draw_line(source_port, target_port, color, connection_type):
-            line = WireLine(source_port.scenePos(), target_port.scenePos(), color=color, connection_type=connection_type)
+        def draw_line(source_port, target_port, color, connection_type, bezier=False):
+            line = WireLine(
+                source_port.scenePos(),
+                target_port.scenePos(),
+                color=color,
+                connection_type=connection_type,
+                bezier=bezier,
+            )
             line.connected_ports = [source_port, target_port]
             self.scene.addItem(line)
             self.scene.wire_items.append(line)
