@@ -58,12 +58,13 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
 # ===== ワイヤ =====
-class WireLine(QtWidgets.QGraphicsLineItem):
+class WireLine(QtWidgets.QGraphicsPathItem):
     def __init__(self, start_pos, end_pos, color=QtCore.Qt.green, connection_type="connect", bezier=False):
         super(WireLine, self).__init__()
         self.connection_type = connection_type
         self.bezier = bezier
         self.setPen(QtGui.QPen(color, 2))
+        self.start_pos = start_pos
         self.update_path(start_pos, end_pos)
         self.setZValue(-1)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
@@ -71,15 +72,18 @@ class WireLine(QtWidgets.QGraphicsLineItem):
         self.connected_ports = []
 
     def update_path(self, start_pos, end_pos):
+        self.start_pos = start_pos
+        path = QtGui.QPainterPath(start_pos)
         if self.bezier:
-            path = QtGui.QPainterPath(start_pos)
-            ctrl1 = QtCore.QPointF((start_pos.x() + end_pos.x())/2, start_pos.y())
-            ctrl2 = QtCore.QPointF((start_pos.x() + end_pos.x())/2, end_pos.y())
+            ctrl1 = QtCore.QPointF((start_pos.x() + end_pos.x()) / 2, start_pos.y())
+            ctrl2 = QtCore.QPointF((start_pos.x() + end_pos.x()) / 2, end_pos.y())
             path.cubicTo(ctrl1, ctrl2, end_pos)
         else:
-            path = QtGui.QPainterPath(start_pos)
             path.lineTo(end_pos)
         self.setPath(path)
+
+    def update_end(self, end_pos):
+        self.update_path(self.start_pos, end_pos)
 
     def paint(self, painter, option, widget=None):
         # 選択時は赤点線
@@ -88,7 +92,7 @@ class WireLine(QtWidgets.QGraphicsLineItem):
         else:
             pen = self.pen()
         painter.setPen(pen)
-        painter.drawLine(self.line())
+        painter.drawPath(self.path())
 
     def get_source_port(self):
         return self.connected_ports[0]
@@ -169,6 +173,7 @@ class NodeScene(QtWidgets.QGraphicsScene):
                     target_port.connected_lines.clear()
 
                 # 接続確定
+                self.temp_line.update_path(source_port.scenePos(), target_port.scenePos())
                 self.temp_line.connected_ports = [source_port, target_port]
                 self.wire_items.append(self.temp_line)
                 source_port.connected_lines.append(self.temp_line)
