@@ -100,6 +100,64 @@ class WireLine(QtWidgets.QGraphicsPathItem):
     def get_target_port(self):
         return self.connected_ports[1]
 
+
+class ConstraintWire(WireLine):
+    def __init__(self, left_ports, right_ports, color=QtCore.Qt.magenta):
+        super(ConstraintWire, self).__init__(
+            left_ports[0].scenePos(),
+            right_ports[0].scenePos(),
+            color=color,
+            connection_type="constraint",
+            bezier=False,
+        )
+        self.left_ports = left_ports
+        self.right_ports = right_ports
+        # 代表としてYポートを保持
+        self.connected_ports = [left_ports[1], right_ports[1]]
+        self.build_path()
+
+    def build_path(self):
+        lpos = [p.scenePos() for p in self.left_ports]
+        rpos = [p.scenePos() for p in self.right_ports]
+
+        left_x = lpos[0].x()
+        right_x = rpos[0].x()
+        left_mid_x = left_x + (right_x - left_x) * 0.25
+        right_mid_x = right_x - (right_x - left_x) * 0.25
+        mid_y = lpos[1].y()
+
+        path = QtGui.QPainterPath()
+
+        # 左側ブランチ
+        path.moveTo(lpos[0])
+        path.lineTo(left_mid_x, lpos[0].y())
+        path.moveTo(lpos[1])
+        path.lineTo(left_mid_x, lpos[1].y())
+        path.moveTo(lpos[2])
+        path.lineTo(left_mid_x, lpos[2].y())
+
+        # 左側縦線
+        path.moveTo(left_mid_x, lpos[0].y())
+        path.lineTo(left_mid_x, lpos[2].y())
+
+        # 中央ライン
+        path.moveTo(left_mid_x, mid_y)
+        path.lineTo(right_mid_x, mid_y)
+
+        # 右側縦線
+        path.moveTo(right_mid_x, rpos[0].y())
+        path.lineTo(right_mid_x, rpos[2].y())
+
+        # 右側ブランチ
+        path.moveTo(rpos[0])
+        path.lineTo(right_mid_x, rpos[0].y())
+        path.moveTo(rpos[1])
+        path.lineTo(right_mid_x, rpos[1].y())
+        path.moveTo(rpos[2])
+        path.lineTo(right_mid_x, rpos[2].y())
+
+        self.setPath(path)
+
 # ===== シーン =====
 class NodeScene(QtWidgets.QGraphicsScene):
     def __init__(self):
@@ -284,6 +342,11 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                                 self.target_node.append(tgt)
                         elif cmds.nodeType(nd) == "transform" and not nd in self.target_node:
                             self.target_node.append(nd)
+                        elif cmds.nodeType(nd).endswith("Constraint"):
+                            targets = cmds.listConnections(nd, d=True, type="transform") or []
+                            for tgt in targets:
+                                if tgt != self.source_node and tgt not in self.target_node:
+                                    self.target_node.append(tgt)
                     print(f"Auto-loaded Target: {self.target_node}")
             self.sync_connections_from_maya()
 
@@ -309,6 +372,14 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                         elif cmds.nodeType(nd) == "transform":
                             self.source_node = nd
                             break
+                        elif cmds.nodeType(nd).endswith("Constraint"):
+                            drivers = cmds.listConnections(nd + ".target", s=True, d=False) or []
+                            for drv in drivers:
+                                if drv != tgt:
+                                    self.source_node = drv
+                                    break
+                            if self.source_node:
+                                break
                     if self.source_node:
                         print(f"Auto-loaded Source: {self.source_node}")
                         break
@@ -480,9 +551,13 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 trs_groups = []
 
             for trs in trs_groups:
-                left_port = next(p for p in self.left_ports if p.name.startswith(trs) and p.name.endswith("X_L"))
-                right_port = next(p for p in self.right_ports if p.name.startswith(trs) and p.name.endswith("X_R"))
-                draw_line(left_port, right_port, QtCore.Qt.magenta, "constraint", bezier=True)
+                left_group = [p for p in self.left_ports if p.name.startswith(trs)]
+                right_group = [p for p in self.right_ports if p.name.startswith(trs)]
+                wire = ConstraintWire(left_group, right_group, QtCore.Qt.magenta)
+                self.scene.addItem(wire)
+                self.scene.wire_items.append(wire)
+                for p in left_group + right_group:
+                    p.connected_lines.append(wire)
 
 # ===== 起動 =====
 def show_ui():
