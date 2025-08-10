@@ -59,20 +59,27 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
 
 # ===== ワイヤ =====
 class WireLine(QtWidgets.QGraphicsLineItem):
-    def __init__(self, start_pos, color=QtCore.Qt.green, connection_type="connect"):
+    def __init__(self, start_pos, end_pos, color=QtCore.Qt.green, connection_type="connect", bezier=False):
         super(WireLine, self).__init__()
         self.connection_type = connection_type
+        self.bezier = bezier
         self.setPen(QtGui.QPen(color, 2))
-        self.setLine(QtCore.QLineF(start_pos, start_pos))
+        self.update_path(start_pos, end_pos)
         self.setZValue(-1)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
 
         self.connected_ports = []
 
-    def update_end(self, end_pos):
-        line = self.line()
-        line.setP2(end_pos)
-        self.setLine(line)
+    def update_path(self, start_pos, end_pos):
+        if self.bezier:
+            path = QtGui.QPainterPath(start_pos)
+            ctrl1 = QtCore.QPointF((start_pos.x() + end_pos.x())/2, start_pos.y())
+            ctrl2 = QtCore.QPointF((start_pos.x() + end_pos.x())/2, end_pos.y())
+            path.cubicTo(ctrl1, ctrl2, end_pos)
+        else:
+            path = QtGui.QPainterPath(start_pos)
+            path.lineTo(end_pos)
+        self.setPath(path)
 
     def paint(self, painter, option, widget=None):
         # 選択時は赤点線
@@ -119,7 +126,7 @@ class NodeScene(QtWidgets.QGraphicsScene):
                 conn_type = "connect"
 
             self.start_port = item
-            self.temp_line = WireLine(item.scenePos(), color=color, connection_type=conn_type)
+            self.temp_line = WireLine(item.scenePos(), item.scenePos(), color=color, connection_type=conn_type)
             self.addItem(self.temp_line)
         else:
             # Port以外クリックで終了
@@ -368,6 +375,19 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                         except Exception as e:
                             print(f"DrivenKey failed: {e}")
 
+        # ---- Constraint削除（ワイヤが存在しない場合）----
+        has_constraint_wire = any(line.connection_type == "constraint" for line in self.scene.wire_items)
+        if not has_constraint_wire:
+            constraints = cmds.listConnections(self.target_node, type=["parentConstraint","pointConstraint","orientConstraint","scaleConstraint"]) or []
+            for con in constraints:
+                drivers = cmds.listConnections(con + ".target", s=True, d=False) or []
+                if self.source_node in drivers:
+                    try:
+                        cmds.delete(con)
+                        print(f"Deleted Constraint: {con}")
+                    except Exception as e:
+                        print(f"Failed to delete constraint {con}: {e}")
+
     def sync_connections_from_maya(self):
         # すべてのワイヤ削除
         for item in self.scene.wire_items:
@@ -380,8 +400,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             return
 
         def draw_line(source_port, target_port, color, connection_type):
-            line = WireLine(source_port.scenePos(), color=color, connection_type=connection_type)
-            line.setLine(QtCore.QLineF(source_port.scenePos(), target_port.scenePos()))
+            line = WireLine(source_port.scenePos(), target_port.scenePos(), color=color, connection_type=connection_type)
             line.connected_ports = [source_port, target_port]
             self.scene.addItem(line)
             self.scene.wire_items.append(line)
@@ -414,6 +433,30 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                             draw_line(left_port, right_port, QtCore.Qt.blue, "driven")
                     break
 
+        # --- Constraint 状態チェック ---
+        constraints = cmds.listConnections(self.target_node, type=["parentConstraint","pointConstraint","orientConstraint","scaleConstraint"]) or []
+        for con in constraints:
+            con_type = cmds.nodeType(con)
+            drivers = cmds.listConnections(con + ".target", s=True, d=False) or []
+            if self.source_node not in drivers:
+                continue
+
+            if con_type == "parentConstraint":
+                trs_groups = ["Translate", "Rotate"]
+            elif con_type == "pointConstraint":
+                trs_groups = ["Translate"]
+            elif con_type == "orientConstraint":
+                trs_groups = ["Rotate"]
+            elif con_type == "scaleConstraint":
+                trs_groups = ["Scale"]
+            else:
+                trs_groups = []
+
+            for trs in trs_groups:
+                left_port = next(p for p in self.left_ports if p.name.startswith(trs) and p.name.endswith("X_L"))
+                right_port = next(p for p in self.right_ports if p.name.startswith(trs) and p.name.endswith("X_R"))
+                draw_line(left_port, right_port, QtCore.Qt.magenta, "constraint", bezier=True)
+
 # ===== 起動 =====
 def show_ui():
     for w in QtWidgets.QApplication.topLevelWidgets():
@@ -423,4 +466,4 @@ def show_ui():
     win = NodeEditorWindow(get_maya_window())
     win.show()
 
-show_ui()
+
