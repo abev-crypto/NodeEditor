@@ -389,7 +389,13 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         # ---- Constraint削除（ワイヤが存在しない場合）----
         has_constraint_wire = any(line.connection_type == "constraint" for line in self.scene.wire_items)
         if not has_constraint_wire:
-            constraints = cmds.listConnections(self.target_node, type=["parentConstraint","pointConstraint","orientConstraint","scaleConstraint"]) or []
+            # listConnections does not accept a list for the "type" flag, so gather each constraint type separately
+            constraint_types = ["parentConstraint", "pointConstraint", "orientConstraint", "scaleConstraint"]
+            constraints = []
+            for ctype in constraint_types:
+                constraints.extend(cmds.listConnections(self.target_node, type=ctype) or [])
+            constraints = list(set(constraints))
+
             for con in constraints:
                 drivers = cmds.listConnections(con + ".target", s=True, d=False) or []
                 if self.source_node in drivers:
@@ -445,7 +451,11 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                     break
 
         # --- Constraint 状態チェック ---
-        constraints = cmds.listConnections(self.target_node, type=["parentConstraint","pointConstraint","orientConstraint","scaleConstraint"]) or []
+        constraint_types = ["parentConstraint", "pointConstraint", "orientConstraint", "scaleConstraint"]
+        constraints = []
+        for ctype in constraint_types:
+            constraints.extend(cmds.listConnections(self.target_node, type=ctype) or [])
+        constraints = list(set(constraints))
         for con in constraints:
             con_type = cmds.nodeType(con)
             drivers = cmds.listConnections(con + ".target", s=True, d=False) or []
