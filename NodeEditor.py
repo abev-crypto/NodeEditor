@@ -219,6 +219,12 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         self.btn_connect = QtWidgets.QPushButton("Connect")
         self.btn_delete = QtWidgets.QPushButton("選択削除")
 
+        # Tooltips
+        self.btn_load_source.setToolTip("選択中のノードを Source として設定します。\nShift: 現在の Source を選択\nAlt: Target の自動取得を省略")
+        self.btn_load_target.setToolTip("選択中のノードを Target として設定します。\nShift: 現在の Target を選択\nAlt: Source の自動取得を省略")
+        self.btn_connect.setToolTip("UI上のワイヤを基に接続や DrivenKey を設定します")
+        self.btn_delete.setToolTip("選択中のワイヤを削除します")
+
         self.btn_load_source.clicked.connect(self.load_source)
         self.btn_load_target.clicked.connect(self.load_target)
         self.btn_connect.clicked.connect(self.apply_connections)
