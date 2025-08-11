@@ -302,11 +302,22 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         spacing = 20
         start_y = 20
 
-        def add_trs_port(side, attr_x, axis_x, port_x):
+        def add_trs_port(side, attr_x, axis_x, port_x, button_x=None):
             y = start_y
             ports = []
             for t in trs:
-                self.scene.addText(t).setPos(attr_x, y - 15)
+                group_start_y = y
+                self.scene.addText(t).setPos(attr_x, group_start_y - 15)
+
+                # Constraint button for left ports
+                if side == "L":
+                    btn = QtWidgets.QPushButton("C")
+                    btn.setFixedSize(20, spacing * len(axes))
+                    proxy = self.scene.addWidget(btn)
+                    bx = button_x if button_x is not None else port_x - 50
+                    proxy.setPos(bx, group_start_y)
+                    btn.clicked.connect(lambda _, t=t: self.apply_constraint(t))
+
                 for a in axes:
                     axis_name = f"{t}{a}_{side}"
                     self.scene.addText(a).setPos(axis_x, y - 10)
@@ -320,6 +331,31 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
 
         self.left_ports = add_trs_port("L", 10, 40, 80)
         self.right_ports = add_trs_port("R", 300, 280, 300)
+
+    def apply_constraint(self, trs_type):
+        if not self.source_node or not self.target_node:
+            print("Source or Target not loaded")
+            return
+
+        constraint_map = {
+            "Translate": cmds.pointConstraint,
+            "Rotate": cmds.orientConstraint,
+            "Scale": cmds.scaleConstraint,
+        }
+
+        con_func = constraint_map.get(trs_type)
+        if not con_func:
+            print(f"No constraint function for {trs_type}")
+            return
+
+        for tgt in self.target_node:
+            try:
+                con_func(self.source_node, tgt, mo=False)
+                print(f"{con_func.__name__}: {self.source_node} -> {tgt}")
+            except Exception as e:
+                print(f"Constraint failed: {e}")
+
+        self.sync_connections_from_maya()
 
     # ==== ボタン機能 ====
     def load_source(self):
