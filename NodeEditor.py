@@ -309,7 +309,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         num_layout = QtWidgets.QHBoxLayout()
         for v in [1, 2, 3, 5, 10, 45, 90, 180]:
             btn = QtWidgets.QPushButton(str(v))
-            btn.clicked.connect(lambda _, val=v: self.apply_value(val))
+            btn.clicked.connect(lambda _=False, val=v: self.apply_value(val))
             num_layout.addWidget(btn)
         layout.addLayout(num_layout)
 
@@ -337,7 +337,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                     proxy = self.scene.addWidget(btn)
                     bx = button_x if button_x is not None else port_x - 50
                     proxy.setPos(bx, group_start_y)
-                    btn.clicked.connect(lambda _, t=t: self.apply_constraint(t))
+                    btn.clicked.connect(lambda _=False, t=t: self.apply_constraint(t))
 
                 for a in axes:
                     axis_name = f"{t}{a}_{side}"
