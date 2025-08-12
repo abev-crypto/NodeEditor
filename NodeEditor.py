@@ -10,15 +10,18 @@ def get_maya_window():
 
 # ===== ポートアイテム =====
 class PortItem(QtWidgets.QGraphicsEllipseItem):
-    def __init__(self, name, side, radius=14, parent=None):
+    def __init__(self, name, side, radius=14, parent=None, window=None):
         super(PortItem, self).__init__(-radius/2, -radius/2, radius, radius, parent)
         self.name = name
         self.side = side
+        self.window = window
 
         # 軸判定（最後の文字がX/Y/Z）
         axis = name[-3]  # 例: TranslateX_L → X
         self.default_color = self.get_color_for_axis(axis, side)
+        self.key_color = QtGui.QColor(self.default_color).lighter(200)
         self.selected_color = QtGui.QColor(255, 255, 0)
+        self.keyed = False
         self.setBrush(QtGui.QBrush(self.default_color))
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsScenePositionChanges)
@@ -66,8 +69,42 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
     def update_brush(self, selected=None):
         if selected is None:
             selected = self.isSelected()
-        color = self.selected_color if selected else self.default_color
+        if selected:
+            color = self.selected_color
+        elif self.keyed:
+            color = self.key_color
+        else:
+            color = self.default_color
         self.setBrush(QtGui.QBrush(color))
+
+    def set_keyed(self, keyed):
+        self.keyed = keyed
+        self.update_brush()
+
+    def toggle_key(self):
+        if not self.window:
+            return
+        attr = self.get_attr_name()
+        if self.side == "L" and self.window.source_node:
+            nodes = [self.window.source_node]
+        elif self.side == "R" and self.window.target_node:
+            nodes = self.window.target_node
+        else:
+            nodes = []
+        if not nodes:
+            return
+        for nd in nodes:
+            full_attr = f"{nd}.{attr}"
+            try:
+                if cmds.keyframe(full_attr, query=True, keyframeCount=True):
+                    cmds.cutKey(full_attr)
+                    print(f"Cut key: {full_attr}")
+                else:
+                    cmds.setKeyframe(full_attr)
+                    print(f"Set key: {full_attr}")
+            except Exception as e:
+                print(f"Failed to toggle key on {full_attr}: {e}")
+        self.window.update_port_key_colors()
 
 # ===== ワイヤ =====
 class WireLine(QtWidgets.QGraphicsPathItem):
@@ -182,10 +219,10 @@ class NodeScene(QtWidgets.QGraphicsScene):
         item = self.itemAt(event.scenePos(), QtGui.QTransform())
         modifiers = event.modifiers()
 
-        # Altクリック → ワイヤ解除
+        # Altクリック → キー切り替え
         if modifiers == QtCore.Qt.AltModifier and isinstance(item, PortItem):
-            # （既存解除処理そのまま）
-            ...
+            item.toggle_key()
+            return
 
         # Portクリック → ワイヤ接続開始
         if isinstance(item, PortItem):
@@ -316,6 +353,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(container)
 
         self.populate_ports()
+        self.update_port_key_colors()
 
     def populate_ports(self):
         trs = ["Translate", "Rotate", "Scale"]
@@ -342,7 +380,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 for a in axes:
                     axis_name = f"{t}{a}_{side}"
                     self.scene.addText(a).setPos(axis_x, y - 10)
-                    port = PortItem(axis_name, side=side)
+                    port = PortItem(axis_name, side=side, window=self)
                     port.setPos(port_x, y)
                     self.scene.addItem(port)
                     ports.append(port)
@@ -383,6 +421,31 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             print(f"Set {full_attr} = {new_val}")
         except Exception as e:
             print(f"Failed to set {full_attr}: {e}")
+
+    def update_port_key_colors(self):
+        for port in self.left_ports:
+            keyed = False
+            if self.source_node:
+                full_attr = f"{self.source_node}.{port.get_attr_name()}"
+                try:
+                    keyed = bool(cmds.keyframe(full_attr, query=True, keyframeCount=True))
+                except Exception:
+                    keyed = False
+            port.set_keyed(keyed)
+
+        for port in self.right_ports:
+            keyed = False
+            if self.target_node:
+                attr = port.get_attr_name()
+                for tgt in self.target_node:
+                    full_attr = f"{tgt}.{attr}"
+                    try:
+                        if cmds.keyframe(full_attr, query=True, keyframeCount=True):
+                            keyed = True
+                            break
+                    except Exception:
+                        pass
+            port.set_keyed(keyed)
 
     def apply_constraint(self, trs_type):
         if not self.source_node or not self.target_node:
@@ -565,6 +628,8 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                     except Exception as e:
                         print(f"Failed to delete constraint {con}: {e}")
 
+        self.update_port_key_colors()
+
     def sync_connections_from_maya(self):
         # すべてのワイヤ削除
         for item in self.scene.wire_items:
@@ -647,6 +712,8 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 self.scene.wire_items.append(wire)
                 for p in left_group + right_group:
                     p.connected_lines.append(wire)
+
+        self.update_port_key_colors()
 
 # ===== 起動 =====
 def show_ui():
