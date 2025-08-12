@@ -17,10 +17,12 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
 
         # 軸判定（最後の文字がX/Y/Z）
         axis = name[-3]  # 例: TranslateX_L → X
-        color = self.get_color_for_axis(axis, side)
-        self.setBrush(QtGui.QBrush(color))
+        self.default_color = self.get_color_for_axis(axis, side)
+        self.selected_color = QtGui.QColor(255, 255, 0)
+        self.setBrush(QtGui.QBrush(self.default_color))
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsScenePositionChanges)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
         self.connected_lines = []
 
@@ -52,10 +54,20 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
-        axis = self.name[-3]
-        color = self.get_color_for_axis(axis, self.side)
-        self.setBrush(QtGui.QBrush(color))
+        self.update_brush()
         super().hoverLeaveEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemSelectedChange:
+            # 選択状態で色変更
+            self.update_brush(selected=value)
+        return super(PortItem, self).itemChange(change, value)
+
+    def update_brush(self, selected=None):
+        if selected is None:
+            selected = self.isSelected()
+        color = self.selected_color if selected else self.default_color
+        self.setBrush(QtGui.QBrush(color))
 
 # ===== ワイヤ =====
 class WireLine(QtWidgets.QGraphicsPathItem):
@@ -292,6 +304,15 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             btn_layout.addWidget(b)
 
         layout.addLayout(btn_layout)
+
+        # 数値ボタン
+        num_layout = QtWidgets.QHBoxLayout()
+        for v in [1, 2, 3, 5, 10, 45, 90, 180]:
+            btn = QtWidgets.QPushButton(str(v))
+            btn.clicked.connect(lambda _, val=v: self.apply_value(val))
+            num_layout.addWidget(btn)
+        layout.addLayout(num_layout)
+
         self.setCentralWidget(container)
 
         self.populate_ports()
@@ -332,6 +353,37 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         self.left_ports = add_trs_port("L", 10, 40, 80)
         self.right_ports = add_trs_port("R", 300, 280, 300)
 
+    def apply_value(self, value):
+        mods = QtWidgets.QApplication.keyboardModifiers()
+        if mods & QtCore.Qt.AltModifier:
+            value = -value
+        selected_ports = [i for i in self.scene.selectedItems() if isinstance(i, PortItem)]
+        for port in selected_ports:
+            attr = port.get_attr_name()
+            if port.side == "L" and self.source_node:
+                full_attr = f"{self.source_node}.{attr}"
+                self.modify_attr(full_attr, value, mods)
+            elif port.side == "R" and self.target_node:
+                for tgt in self.target_node:
+                    full_attr = f"{tgt}.{attr}"
+                    self.modify_attr(full_attr, value, mods)
+
+    def modify_attr(self, full_attr, value, mods):
+        try:
+            current = cmds.getAttr(full_attr)
+            if mods & QtCore.Qt.ShiftModifier and mods & QtCore.Qt.ControlModifier:
+                new_val = current / value if value else current
+            elif mods & QtCore.Qt.ShiftModifier:
+                new_val = current + value
+            elif mods & QtCore.Qt.ControlModifier:
+                new_val = current * value
+            else:
+                new_val = value
+            cmds.setAttr(full_attr, new_val)
+            print(f"Set {full_attr} = {new_val}")
+        except Exception as e:
+            print(f"Failed to set {full_attr}: {e}")
+
     def apply_constraint(self, trs_type):
         if not self.source_node or not self.target_node:
             print("Source or Target not loaded")
@@ -356,6 +408,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 print(f"Constraint failed: {e}")
 
         self.sync_connections_from_maya()
+
 
     # ==== ボタン機能 ====
     def load_source(self):
