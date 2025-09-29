@@ -108,6 +108,40 @@ class PortItem(QtWidgets.QGraphicsEllipseItem):
         self.window.update_port_key_colors()
 
 # ===== ワイヤ =====
+class IntermediateNodeItem(QtWidgets.QGraphicsEllipseItem):
+    def __init__(self, node_name, display_label=None, radius=10):
+        super(IntermediateNodeItem, self).__init__(-radius / 2, -radius / 2, radius, radius)
+        self.node_name = node_name
+        self.display_label = display_label or node_name
+        self.radius = radius
+
+        self.setBrush(QtGui.QBrush(QtGui.QColor(60, 60, 60)))
+        self.setPen(QtGui.QPen(QtCore.Qt.white, 1))
+        self.setZValue(-0.5)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
+
+        self.text_item = QtWidgets.QGraphicsSimpleTextItem(self.display_label, self)
+        self.text_item.setBrush(QtGui.QBrush(QtCore.Qt.white))
+        self.update_label_position()
+
+    def update_label_position(self):
+        rect = self.text_item.boundingRect()
+        self.text_item.setPos(-rect.width() / 2, -self.radius / 2 - rect.height())
+
+    def set_display_label(self, text):
+        self.display_label = text
+        self.text_item.setText(text)
+        self.update_label_position()
+
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemSelectedHasChanged and value:
+            try:
+                cmds.select(self.node_name, replace=True)
+            except Exception as e:
+                print(f"Failed to select node {self.node_name}: {e}")
+        return super(IntermediateNodeItem, self).itemChange(change, value)
+
+
 class WireLine(QtWidgets.QGraphicsPathItem):
     def __init__(self, start_pos, end_pos, color=QtCore.Qt.green, connection_type="connect", bezier=False):
         super(WireLine, self).__init__()
@@ -115,6 +149,8 @@ class WireLine(QtWidgets.QGraphicsPathItem):
         self.bezier = bezier
         self.setPen(QtGui.QPen(color, 2))
         self.start_pos = start_pos
+        self.intermediate_items = []
+        self.intermediate_nodes = []
         self.update_path(start_pos, end_pos)
         self.setZValue(-1)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
@@ -131,6 +167,7 @@ class WireLine(QtWidgets.QGraphicsPathItem):
         else:
             path.lineTo(end_pos)
         self.setPath(path)
+        self.update_intermediate_positions()
 
     def update_end(self, end_pos):
         self.update_path(self.start_pos, end_pos)
@@ -149,6 +186,40 @@ class WireLine(QtWidgets.QGraphicsPathItem):
 
     def get_target_port(self):
         return self.connected_ports[1]
+
+    def clear_intermediate_nodes(self):
+        for item in self.intermediate_items:
+            if item.scene():
+                item.scene().removeItem(item)
+        self.intermediate_items = []
+        self.intermediate_nodes = []
+
+    def set_intermediate_nodes(self, nodes_info, scene):
+        self.clear_intermediate_nodes()
+        if not nodes_info:
+            return
+        self.intermediate_nodes = nodes_info
+        for info in nodes_info:
+            item = IntermediateNodeItem(info.get("name", ""), info.get("label"))
+            scene.addItem(item)
+            self.intermediate_items.append(item)
+        self.update_intermediate_positions()
+
+    def update_intermediate_positions(self):
+        if not self.intermediate_items:
+            return
+        path = self.path()
+        if path.isEmpty():
+            return
+        count = len(self.intermediate_items)
+        for idx, item in enumerate(self.intermediate_items):
+            info = self.intermediate_nodes[idx] if idx < len(self.intermediate_nodes) else {}
+            if "pos" in info and isinstance(info["pos"], QtCore.QPointF):
+                item.setPos(info["pos"])
+                continue
+            percent = (idx + 1) / (count + 1)
+            point = path.pointAtPercent(percent)
+            item.setPos(point)
 
 
 class ConstraintWire(WireLine):
@@ -175,6 +246,8 @@ class ConstraintWire(WireLine):
         left_mid_x = left_x + (right_x - left_x) * 0.25
         right_mid_x = right_x - (right_x - left_x) * 0.25
         mid_y = lpos[1].y()
+
+        self.mid_point = QtCore.QPointF((left_mid_x + right_mid_x) / 2, mid_y)
 
         path = QtGui.QPainterPath()
 
@@ -277,6 +350,7 @@ class NodeScene(QtWidgets.QGraphicsScene):
                         for port in self.items():
                             if isinstance(port, PortItem) and old_line in port.connected_lines:
                                 port.connected_lines.remove(old_line)
+                        old_line.clear_intermediate_nodes()
                         self.removeItem(old_line)
                     target_port.connected_lines.clear()
 
@@ -288,6 +362,7 @@ class NodeScene(QtWidgets.QGraphicsScene):
                 target_port.connected_lines.append(self.temp_line)
             else:
                 # 接続失敗 → 線を削除
+                self.temp_line.clear_intermediate_nodes()
                 self.removeItem(self.temp_line)
 
             # 常にモード解除
@@ -426,6 +501,64 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"Failed to set {full_attr}: {e}")
 
+    def get_constraint_label(self, constraint_type):
+        label_map = {
+            "parentConstraint": "PA",
+            "pointConstraint": "PT",
+            "orientConstraint": "OR",
+            "scaleConstraint": "SC",
+        }
+        if constraint_type in label_map:
+            return label_map[constraint_type]
+        if constraint_type:
+            return constraint_type[:2].upper()
+        return ""
+
+    def build_intermediate_nodes_info(self, chain):
+        infos = []
+        for node in chain:
+            node_name = node.get("name")
+            node_type = node.get("type", "") or ""
+            label = node_name
+            if node_type.startswith("animCurve"):
+                label = "DR"
+            elif node_type.endswith("Constraint"):
+                label = self.get_constraint_label(node_type)
+            infos.append({"name": node_name, "label": label, "type": node_type})
+        return infos
+
+    def find_connection_chain(self, src_full, tgt_full):
+        visited = set()
+        queue = [(tgt_full, [])]
+
+        try:
+            while queue:
+                plug, path = queue.pop(0)
+                if plug in visited:
+                    continue
+                visited.add(plug)
+                drivers = cmds.listConnections(plug, s=True, d=False, plugs=True) or []
+                for driver in drivers:
+                    driver_node = driver.split(".")[0]
+                    new_path = path + [(driver_node, driver)]
+                    if driver == src_full:
+                        between = new_path[:-1]
+                        between.reverse()
+                        result = []
+                        for node_name, _ in between:
+                            try:
+                                node_type = cmds.nodeType(node_name)
+                            except Exception:
+                                node_type = ""
+                            result.append({"name": node_name, "type": node_type})
+                        return result
+                    if driver not in visited:
+                        queue.append((driver, new_path))
+        except Exception as e:
+            print(f"Failed to trace connection: {src_full} -> {tgt_full}: {e}")
+
+        return None
+
     def update_port_key_colors(self):
         for port in self.left_ports:
             keyed = False
@@ -547,6 +680,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 for port in self.left_ports + self.right_ports:
                     if item in port.connected_lines:
                         port.connected_lines.remove(item)
+                item.clear_intermediate_nodes()
                 self.scene.wire_items.remove(item)
                 self.scene.removeItem(item)
 
@@ -634,7 +768,9 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                             print(f"Failed to disconnect {conn}: {e}")
 
         # ---- UIワイヤを順に処理（Connect or Driven）----
-        selected_items = self.scene.selectedItems()  # 選択中ワイヤ
+        selected_items = [
+            item for item in self.scene.selectedItems() if isinstance(item, WireLine)
+        ]
         for line in self.scene.wire_items:
             src_full = self.assemble_fullpath(self.source_node, line)
             tgt_full_array = [self.assemble_fullpath(nd, line) for nd in self.target_node]
@@ -688,16 +824,17 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
 
     def sync_connections_from_maya(self):
         # すべてのワイヤ削除
-        for item in self.scene.wire_items:
-            self.scene.wire_items.remove(item)
+        for item in self.scene.wire_items[:]:
+            item.clear_intermediate_nodes()
             self.scene.removeItem(item)
+        self.scene.wire_items.clear()
         for port in self.left_ports + self.right_ports:
             port.connected_lines.clear()
 
         if not self.source_node or not self.target_node:
             return
 
-        def draw_line(source_port, target_port, color, connection_type, bezier=False):
+        def draw_line(source_port, target_port, color, connection_type, intermediate=None, bezier=False):
             line = WireLine(
                 source_port.scenePos(),
                 target_port.scenePos(),
@@ -710,32 +847,41 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             self.scene.wire_items.append(line)
             source_port.connected_lines.append(line)
             target_port.connected_lines.append(line)
+            if intermediate:
+                line.set_intermediate_nodes(intermediate, self.scene)
+            return line
 
-        # 左ポートの各属性についてTarget側接続をチェック
+        right_port_map = {port.get_attr_name(): port for port in self.right_ports}
+
         for left_port in self.left_ports:
-            src_full = f"{self.source_node}.{left_port.get_attr_name()}"
-            conn = cmds.listConnections(src_full, s=False, d=True, plugs=True)
-            if conn:
-                # ターゲット側ポートを検索
-                tgt_attr = conn[0].split(".")[-1]
-                for right_port in self.right_ports:
-                    if right_port.get_attr_name() == tgt_attr:
-                        draw_line(left_port, right_port, QtCore.Qt.green, "connect")
+            attr_name = left_port.get_attr_name()
+            right_port = right_port_map.get(attr_name)
+            if not right_port:
+                continue
 
-        # Target側の DrivenKey 情報取得
-        for right_port in self.right_ports:
-            # DrivenKeyframe が設定されているか確認
-            for driven_full in self.target_node:
-                driven_full = f"{driven_full}.{right_port.get_attr_name()}"
-                driveres = cmds.listConnections(driven_full, type="animCurve", s=True, d=False, plugs=True) or []
-                if driveres:
-                    driver = driveres[0].split(".")[0]
-                    driver_attr = cmds.listConnections(driver, s=True, d=False, plugs=True)[0].split(".")[-1]
-                    # Driver ポート探索
-                    for left_port in self.left_ports:
-                        if left_port.get_attr_name() == driver_attr:
-                            draw_line(left_port, right_port, QtCore.Qt.blue, "driven")
-                    break
+            src_full = f"{self.source_node}.{attr_name}"
+            found = False
+            for tgt in self.target_node:
+                tgt_full = f"{tgt}.{attr_name}"
+                chain = self.find_connection_chain(src_full, tgt_full)
+                if chain is None:
+                    continue
+
+                connection_type = "connect"
+                for node in chain:
+                    node_type = node.get("type", "")
+                    if node_type.startswith("animCurve"):
+                        connection_type = "driven"
+                        break
+
+                color = QtCore.Qt.blue if connection_type == "driven" else QtCore.Qt.green
+                intermediate = self.build_intermediate_nodes_info(chain)
+                draw_line(left_port, right_port, color, connection_type, intermediate)
+                found = True
+                break
+
+            if not found:
+                continue
 
         # --- Constraint 状態チェック ---
         constraint_types = ["parentConstraint", "pointConstraint", "orientConstraint", "scaleConstraint"]
@@ -766,6 +912,11 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 wire = ConstraintWire(left_group, right_group, QtCore.Qt.magenta)
                 self.scene.addItem(wire)
                 self.scene.wire_items.append(wire)
+                label = self.get_constraint_label(con_type)
+                wire.set_intermediate_nodes(
+                    [{"name": con, "label": label, "type": con_type, "pos": wire.mid_point}],
+                    self.scene,
+                )
                 for p in left_group + right_group:
                     p.connected_lines.append(wire)
 
