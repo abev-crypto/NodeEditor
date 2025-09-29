@@ -2,6 +2,7 @@ from turtle import left
 from PySide2 import QtWidgets, QtCore, QtGui
 import maya.OpenMayaUI as omui
 import maya.cmds as cmds
+import maya.mel as mel
 from shiboken2 import wrapInstance
 
 def get_maya_window():
@@ -324,20 +325,23 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
         self.btn_load_source = QtWidgets.QPushButton("Load Source")
         self.btn_load_target = QtWidgets.QPushButton("Load Target")
         self.btn_connect = QtWidgets.QPushButton("Connect")
+        self.btn_edit_curve = QtWidgets.QPushButton("Edit Curve")
         self.btn_delete = QtWidgets.QPushButton("選択削除")
 
         # Tooltips
         self.btn_load_source.setToolTip("選択中のノードを Source として設定します。\nShift: 現在の Source を選択\nAlt: Target の自動取得を省略")
         self.btn_load_target.setToolTip("選択中のノードを Target として設定します。\nShift: 現在の Target を選択\nAlt: Source の自動取得を省略")
         self.btn_connect.setToolTip("UI上のワイヤを基に接続や DrivenKey を設定します")
+        self.btn_edit_curve.setToolTip("選択した Driven ワイヤのアニメーションカーブを編集します")
         self.btn_delete.setToolTip("選択中のワイヤを削除します")
 
         self.btn_load_source.clicked.connect(self.load_source)
         self.btn_load_target.clicked.connect(self.load_target)
         self.btn_connect.clicked.connect(self.apply_connections)
         self.btn_delete.clicked.connect(self.delete_selected_lines)
+        self.btn_edit_curve.clicked.connect(self.edit_selected_driven_curves)
 
-        for b in [self.btn_load_source, self.btn_load_target, self.btn_connect, self.btn_delete]:
+        for b in [self.btn_load_source, self.btn_load_target, self.btn_connect, self.btn_edit_curve, self.btn_delete]:
             btn_layout.addWidget(b)
 
         layout.addLayout(btn_layout)
@@ -545,6 +549,58 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                         port.connected_lines.remove(item)
                 self.scene.wire_items.remove(item)
                 self.scene.removeItem(item)
+
+    def get_anim_curves_for_wire(self, wire):
+        if wire.connection_type != "driven":
+            return []
+        if not self.source_node or not self.target_node:
+            return []
+
+        driver_attr = wire.get_source_port().get_attr_name()
+        target_attr = wire.get_target_port().get_attr_name()
+        src_full = f"{self.source_node}.{driver_attr}"
+        curves = []
+
+        for tgt in self.target_node:
+            tgt_full = f"{tgt}.{target_attr}"
+            anims = cmds.listConnections(tgt_full, type="animCurve", s=True, d=False) or []
+            for anim in anims:
+                try:
+                    drivers = cmds.listConnections(f"{anim}.input", s=True, d=False, plugs=True) or []
+                except Exception:
+                    drivers = cmds.listConnections(anim, s=True, d=False, plugs=True) or []
+                if src_full in drivers and anim not in curves:
+                    curves.append(anim)
+
+        return curves
+
+    def edit_selected_driven_curves(self):
+        selected_wires = [
+            item for item in self.scene.selectedItems()
+            if isinstance(item, WireLine) and item.connection_type == "driven"
+        ]
+
+        if not selected_wires:
+            print("Driven ワイヤが選択されていません")
+            return
+
+        curves = []
+        for wire in selected_wires:
+            curves.extend(self.get_anim_curves_for_wire(wire))
+
+        if not curves:
+            print("該当するアニメーションカーブが見つかりませんでした")
+            return
+
+        try:
+            cmds.select(curves, replace=True)
+            try:
+                mel.eval("GraphEditor;")
+            except Exception:
+                pass
+            print(f"Selected animCurves for editing: {curves}")
+        except Exception as e:
+            print(f"Failed to select animCurves: {e}")
 
     def assemble_fullpath(self, node, wire):
         return f"{node}.{wire.get_source_port().get_attr_name()}"
