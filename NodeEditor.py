@@ -114,6 +114,7 @@ class IntermediateNodeItem(QtWidgets.QGraphicsEllipseItem):
         self.node_name = node_name
         self.display_label = display_label or node_name
         self.radius = radius
+        self.parent_wire = None
 
         self.setBrush(QtGui.QBrush(QtGui.QColor(60, 60, 60)))
         self.setPen(QtGui.QPen(QtCore.Qt.white, 1))
@@ -191,6 +192,7 @@ class WireLine(QtWidgets.QGraphicsPathItem):
         for item in self.intermediate_items:
             if item.scene():
                 item.scene().removeItem(item)
+            item.parent_wire = None
         self.intermediate_items = []
         self.intermediate_nodes = []
 
@@ -202,6 +204,7 @@ class WireLine(QtWidgets.QGraphicsPathItem):
         for info in nodes_info:
             item = IntermediateNodeItem(info.get("name", ""), info.get("label"))
             scene.addItem(item)
+            item.parent_wire = self
             self.intermediate_items.append(item)
         self.update_intermediate_positions()
 
@@ -469,6 +472,7 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
 
         self.left_ports = add_trs_port("L", 10, 40, 80)
         self.right_ports = add_trs_port("R", 300, 280, 300)
+        self._trs_attr_names = sorted({p.get_attr_name() for p in self.left_ports})
 
     def apply_value(self, value):
         mods = QtWidgets.QApplication.keyboardModifiers()
@@ -526,6 +530,49 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
                 label = self.get_constraint_label(node_type)
             infos.append({"name": node_name, "label": label, "type": node_type})
         return infos
+
+    def get_trs_attribute_names(self):
+        return list(self._trs_attr_names)
+
+    def list_history_transforms(self, node, future=True):
+        try:
+            history = cmds.listHistory(node, future=future, pruneDagObjects=True) or []
+        except Exception:
+            history = []
+        unique = []
+        for nd in history:
+            if nd == node:
+                continue
+            if nd in unique:
+                continue
+            try:
+                if cmds.nodeType(nd) != "transform":
+                    continue
+            except Exception:
+                continue
+            unique.append(nd)
+        return unique
+
+    def find_transforms_connected_through_trs(self, node, direction="downstream"):
+        attr_names = self.get_trs_attribute_names()
+        future = direction == "downstream"
+        candidates = self.list_history_transforms(node, future=future)
+        connected = []
+        for cand in candidates:
+            if direction == "downstream":
+                src_node, tgt_node = node, cand
+            else:
+                src_node, tgt_node = cand, node
+
+            for attr in attr_names:
+                src_full = f"{src_node}.{attr}"
+                tgt_full = f"{tgt_node}.{attr}"
+                chain = self.find_connection_chain(src_full, tgt_full)
+                if chain is not None:
+                    if cand not in connected:
+                        connected.append(cand)
+                    break
+        return connected
 
     def find_connection_chain(self, src_full, tgt_full):
         visited = set()
@@ -622,20 +669,11 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             print(f"Source loaded: {self.source_node}")
             if not mods & QtCore.Qt.AltModifier:
                 self.target_node = []
-                cons = cmds.listConnections(self.source_node, d=True) or []
-                if cons:
-                    for nd in cons:
-                        if cmds.nodeType(nd) == "animCurve":
-                            tgt = cmds.listConnections(nd, d=True)[0]
-                            if not tgt in self.target_node:
-                                self.target_node.append(tgt)
-                        elif cmds.nodeType(nd) == "transform" and not nd in self.target_node:
-                            self.target_node.append(nd)
-                        elif cmds.nodeType(nd).endswith("Constraint"):
-                            targets = cmds.listConnections(nd, d=True, type="transform") or []
-                            for tgt in targets:
-                                if tgt != self.source_node and tgt not in self.target_node:
-                                    self.target_node.append(tgt)
+                connected = self.find_transforms_connected_through_trs(self.source_node, direction="downstream")
+                for tgt in connected:
+                    if tgt != self.source_node and tgt not in self.target_node:
+                        self.target_node.append(tgt)
+                if self.target_node:
                     print(f"Auto-loaded Target: {self.target_node}")
             self.sync_connections_from_maya()
 
@@ -652,37 +690,49 @@ class NodeEditorWindow(QtWidgets.QMainWindow):
             if not mods & QtCore.Qt.AltModifier:
                 self.source_node = None
                 for tgt in self.target_node:
-                    cons = cmds.listConnections(tgt, s=True) or []
-                    for nd in cons:
-                        if cmds.nodeType(nd) == "animCurve":
-                            sor = cmds.listConnections(nd, s=True)[0]
-                            self.source_node = sor
-                            break
-                        elif cmds.nodeType(nd) == "transform":
-                            self.source_node = nd
-                            break
-                        elif cmds.nodeType(nd).endswith("Constraint"):
-                            drivers = cmds.listConnections(nd + ".target", s=True, d=False) or []
-                            for drv in drivers:
-                                if drv != tgt:
-                                    self.source_node = drv
-                                    break
-                            if self.source_node:
-                                break
-                    if self.source_node:
+                    candidates = self.find_transforms_connected_through_trs(tgt, direction="upstream")
+                    for cand in candidates:
+                        if cand in self.target_node:
+                            continue
+                        self.source_node = cand
                         print(f"Auto-loaded Source: {self.source_node}")
+                        break
+                    if self.source_node:
                         break
             self.sync_connections_from_maya()
 
     def delete_selected_lines(self):
+        items = set()
         for item in self.scene.selectedItems():
             if isinstance(item, WireLine):
-                for port in self.left_ports + self.right_ports:
-                    if item in port.connected_lines:
-                        port.connected_lines.remove(item)
-                item.clear_intermediate_nodes()
+                items.add(item)
+            elif isinstance(item, IntermediateNodeItem) and item.parent_wire:
+                items.add(item.parent_wire)
+
+        deleted_constraint = False
+        for item in items:
+            for port in self.left_ports + self.right_ports:
+                if item in port.connected_lines:
+                    port.connected_lines.remove(item)
+            if isinstance(item, ConstraintWire):
+                for info in item.intermediate_nodes:
+                    node_name = info.get("name")
+                    node_type = info.get("type", "") or ""
+                    if node_name and node_type.endswith("Constraint"):
+                        try:
+                            cmds.delete(node_name)
+                            print(f"Deleted Constraint node: {node_name}")
+                            deleted_constraint = True
+                        except Exception as e:
+                            print(f"Failed to delete constraint {node_name}: {e}")
+            item.clear_intermediate_nodes()
+            if item in self.scene.wire_items:
                 self.scene.wire_items.remove(item)
+            if item.scene():
                 self.scene.removeItem(item)
+
+        if deleted_constraint:
+            self.sync_connections_from_maya()
 
     def get_anim_curves_for_wire(self, wire):
         if wire.connection_type != "driven":
